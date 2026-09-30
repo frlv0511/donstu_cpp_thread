@@ -1,56 +1,77 @@
-// threadfuncs.cpp
 #include "threadfuncs.h"
 
-#include <iostream>
+#include <chrono>
+#include <cstdlib>
 #include <sstream>
+#include <sys/syscall.h>
+#include <thread>
 #include <unistd.h>
-#include <syscall.h>
-//#include <windows.h>
-#include <sys/types.h>
+
+Logger g_logger("output.log");
 
 Logger::Logger(const std::string& filename)
-  : file_(filename, std::ios::out | std::ios::trunc)
-{
-  if (!file_.is_open()) {
-    throw std::runtime_error("Cannot open log file: " + filename);
-  }
+    : file_(filename, std::ios::out | std::ios::trunc) {
+    if (!file_) {
+        throw std::runtime_error("Не удалось открыть лог-файл: " + filename);
+    }
 }
 
-Logger::~Logger() {
-  // std::ofstream close file here automatically
+bool Logger::writeLine(const std::string& msg) {
+    if (std::getenv("NO_LOG_MUTEX") != nullptr) {
+        file_ << msg << "\n";
+        file_.flush();
+        return static_cast<bool>(file_);
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    file_ << msg << "\n";
+    file_.flush();
+    return static_cast<bool>(file_);
 }
 
-void Logger::writeLine(const std::string& msg) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  file_ << msg;
-  file_.flush();
-  if (!file_) {
-    std::cerr << "write failed: " << msg << "\n";
-  }
+std::uint64_t getThreadID() {
+    return static_cast<std::uint64_t>(syscall(SYS_gettid));
 }
 
-pid_t getThreadID() {
-  return static_cast<pid_t>(::syscall(SYS_gettid));
-  //return GetCurrentThreadId();
+namespace {
+
+int sleepMs() {
+    if (const char* v = std::getenv("SLEEP_MS")) {
+        return std::atoi(v);
+    }
+    return 100;
 }
 
-void about() {
-  std::cout << "std::thread example\n";
+int iterCount() {
+    if (const char* v = std::getenv("ITER")) {
+        return std::atoi(v);
+    }
+    return COUNT_ITERATIONS;
 }
 
-void funcThread(const ThreadArgs& args, Logger& logger) {
-  for (int i = 0; i < COUNT_ITERATIONS; ++i) {
+}  // namespace
+
+void funcThread(const ThreadArgs& args) {
+    const int iters = iterCount();
+    const int delay = sleepMs();
+    for (int i = 0; i < iters; ++i) {
+        std::ostringstream oss;
+        oss << "[tag = " << args.tag << "] pid = " << getpid()
+            << " ppid = " << getppid() << " tid = " << getThreadID()
+            << " std::thread::id = " << std::this_thread::get_id()
+            << " iter = " << i << " msg = " << args.message;
+        g_logger.writeLine(oss.str());
+        if (delay > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        }
+    }
+}
+
+void funcThreadPromise(ThreadArgs args, std::promise<std::string> prom) {
+    const int iters = iterCount();
+    for (int i = 0; i < iters; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
     std::ostringstream oss;
-
-    oss << "[tag = " << args.tag
-        << "] pid = "  << ::getpid()
-        << " ppid = "  << ::getppid()
-        << " tid = "   << getThreadID()
-        << " iter = "  << i
-        << "\n";
-    logger.writeLine(oss.str());
-
-    // imitation of useful work
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
+    oss << "поток " << args.tag << " отработал " << iters << " итераций";
+    prom.set_value(oss.str());
 }
